@@ -1,0 +1,18 @@
+;; Real-world regulator this blueprint's compliance surface points at.
+;; :head-role is institutional title only — no personal names.
+;; This repo is NOT this organization and never acts as it (see README).
+{:ooyake-id "gov.chn.stats"
+ :official-url "https://www.stats.gov.cn/"
+ :name-en "National Bureau of Statistics of China"
+ :name-local "国家统计局"
+ ;; :wikidata deliberately absent — no Wikidata item was fetched and read
+ ;; for this entry, and this repo does not record identifiers it did not
+ ;; verify. Add it when someone actually checks the item.
+ :head-role "国家统计局局长"
+ :head-role-note "institutional office title only; personal names of current office-holders are intentionally NOT stored"
+ :contact-page "https://www.stats.gov.cn/"
+ :sourced-from "stats.gov.cn — fetched 2026-07-27 while reading 涉外调查管理办法 (国家统计局令第7号)"
+ :role "涉外调查许可证の资格认定および涉外社会调查项目审批の主管部门 (涉外调查管理办法第十条・第二十三条)"
+ :provincial-authority-note "省・自治区・直辖市人民政府统计机构も资格认定および省内项目の审批を行う (第十条・第二十三条)"
+ :hq {:line-en "Beijing" :country "chn" :kind "national-statistical-office"
+      :provenance "https://www.stats.gov.cn/" :last-verified "2026-07-27" :sourcing "authoritative"}}

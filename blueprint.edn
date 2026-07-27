@@ -1,0 +1,35 @@
+{:itonami.blueprint/id "cloud-itonami-iso3166-chn-market-research"
+ :itonami.blueprint/name "China Foreign-Related Survey (涉外调查) Permit & Project-Approval Compliance Service"
+ :itonami.blueprint/iso3166 "CHN"
+ :itonami.blueprint/isic-rev5 "7320"
+ :itonami.blueprint/domain :professional/foreign-survey-compliance
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:respondent-protection :research-integrity :cross-border-friction-reduction]
+ :itonami.blueprint/governor :survey-integrity-governor
+ :itonami.blueprint/robotics false
+ :itonami.blueprint/required-technologies [:identity :forms :dmn :bpmn :audit-ledger]
+ :itonami.blueprint/non-goals [:autonomous-fieldwork :legal-advice :impersonating-a-statistical-authority]
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :implemented
+ :itonami.blueprint/implemented-slice
+ "foreignsurvey.governor (an independent Survey-Integrity Compliance
+ Governor) in front of a contained foreignsurvey.foreignsurveyllm
+ advisor, wired as a langgraph StateGraph (foreignsurvey.operation) with
+ an interrupt-before approval node. Two flagship HARD checks, both from
+ 涉外调查管理办法 (国家统计局令第7号): foreign-survey-permit-missing /
+ -elapsed / -validity-unknown (第十条 -- the conducting organization must
+ hold a 涉外调查许可证 recorded AND unexpired at the field start date,
+ checked at BOTH actuation ops), and social-survey-project-unapproved
+ (第八条/第九条 -- ONLY 涉外社会调查 needs per-project approval;
+ 涉外市场调查 needs the permit alone, and holding a market survey on a
+ missing approval would block legitimate research, so
+ :per-project-approval-kinds is a CLOSED set rather than a boolean).
+ Further HARD checks: prohibited-content against the closed
+ seven-item 第七条 set (enforced at filing as well as fieldwork),
+ survey-kind-unrecognized (第三条 -- an unclassified kind is NOT read as
+ the more permissive 市场调查), sensitive-pi-without-separate-consent and
+ cross-border-transfer-without-lawful-basis (PIPL, with the four
+ 第三十八条 bases as a closed set), and the fleet's MAXIMUM-ceiling family
+ check on planned vs approved sample size with its own explicit
+ un-checkable hold. :project/file and :survey/field are absent from every
+ phase's :auto set, asserted at load time in foreignsurvey.phase."}

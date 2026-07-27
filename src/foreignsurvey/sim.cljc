@@ -1,0 +1,102 @@
+(ns foreignsurvey.sim
+  "Demo driver -- `clojure -M:dev:run`. Walks a clean foreign-related
+  social survey through intake -> regime assessment -> 项目审批 filing
+  (escalate/approve/commit) -> fieldwork (escalate/approve/commit), then
+  shows every HARD-hold scenario the China regime adds -- including the
+  one that must NOT hold: a foreign-related MARKET survey needs the
+  permit but no per-project approval."
+  (:require [langgraph.graph :as g]
+            [foreignsurvey.store :as store]
+            [foreignsurvey.operation :as op]))
+
+(def operator {:actor-id "op-1" :actor-role :research-operator :phase 3})
+
+(defn- exec-op [actor tid request context]
+  (g/run* actor {:request request :context context} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "op-1"}} {:thread-id tid :resume? true}))
+
+(defn- assess! [actor tid-prefix subject]
+  (exec-op actor (str tid-prefix "-assess") {:op :regime/assess :subject subject} operator)
+  (approve! actor (str tid-prefix "-assess")))
+
+(defn -main [& _]
+  (let [db (store/seed-db)
+        actor (op/build db)]
+    (println "== survey/intake srv-1 (CHN social, clean) ==")
+    (println (exec-op actor "t1" {:op :survey/intake :subject "srv-1"
+                                  :patch {:id "srv-1" :operator "北京某调查有限公司"}} operator))
+
+    (println "== regime/assess srv-1 (escalates -- human approves) ==")
+    (println (exec-op actor "t2" {:op :regime/assess :subject "srv-1"} operator))
+    (println (approve! actor "t2"))
+
+    (println "== project/file srv-1 (always escalates -- actuation/file-project) ==")
+    (let [r (exec-op actor "t3" {:op :project/file :subject "srv-1"} operator)]
+      (println r)
+      (println "-- human research operator approves --")
+      (println (approve! actor "t3")))
+
+    (println "== survey/field srv-1 (always escalates -- actuation/field-survey) ==")
+    (let [r (exec-op actor "t4" {:op :survey/field :subject "srv-1"} operator)]
+      (println r)
+      (println "-- human research operator approves --")
+      (println (approve! actor "t4")))
+
+    (println "== regime/assess srv-2 (no spec-basis -> HARD hold) ==")
+    (println (exec-op actor "t5" {:op :regime/assess :subject "srv-2" :no-spec? true} operator))
+
+    (println "== survey/field srv-3 (涉外调查许可证 missing -> HARD hold, FLAGSHIP) ==")
+    (assess! actor "t6" "srv-3")
+    (println (exec-op actor "t6-fld" {:op :survey/field :subject "srv-3"} operator))
+
+    (println "== survey/field srv-4 (社会调查 without 项目审批 -> HARD hold, FLAGSHIP) ==")
+    (assess! actor "t7" "srv-4")
+    (println (exec-op actor "t7-fld" {:op :survey/field :subject "srv-4"} operator))
+
+    (println "== survey/field srv-5 (市场调查: permit only, NO 项目审批 needed -> proceeds) ==")
+    (assess! actor "t8" "srv-5")
+    (let [r (exec-op actor "t8-fld" {:op :survey/field :subject "srv-5"} operator)]
+      (println r)
+      (println "-- human research operator approves --")
+      (println (approve! actor "t8-fld")))
+
+    (println "== survey/field srv-6 (许可证 expired -> HARD hold) ==")
+    (assess! actor "t9" "srv-6")
+    (println (exec-op actor "t9-fld" {:op :survey/field :subject "srv-6"} operator))
+
+    (println "== project/file srv-7 (第七条 prohibited content -> HARD hold, even at filing) ==")
+    (assess! actor "t10" "srv-7")
+    (println (exec-op actor "t10-fil" {:op :project/file :subject "srv-7"} operator))
+
+    (println "== survey/field srv-8 (敏感个人信息 without separate consent -> HARD hold) ==")
+    (assess! actor "t11" "srv-8")
+    (println (exec-op actor "t11-fld" {:op :survey/field :subject "srv-8"} operator))
+
+    (println "== survey/field srv-9 (cross-border transfer, no PIPL 第三十八条 basis -> HARD hold) ==")
+    (assess! actor "t12" "srv-9")
+    (println (exec-op actor "t12-fld" {:op :survey/field :subject "srv-9"} operator))
+
+    (println "== survey/field srv-10 (planned sample beyond approved scope -> HARD hold) ==")
+    (assess! actor "t13" "srv-10")
+    (println (exec-op actor "t13-fld" {:op :survey/field :subject "srv-10"} operator))
+
+    (println "== survey/field srv-12 (unrecognized 调查种别 -> HARD hold, not read as 市场调查) ==")
+    (assess! actor "t14" "srv-12")
+    (println (exec-op actor "t14-fld" {:op :survey/field :subject "srv-12"} operator))
+
+    (println "== project/file srv-1 AGAIN (double-file -> HARD hold) ==")
+    (println (exec-op actor "t15" {:op :project/file :subject "srv-1"} operator))
+
+    (println "== survey/field srv-1 AGAIN (double-field -> HARD hold) ==")
+    (println (exec-op actor "t16" {:op :survey/field :subject "srv-1"} operator))
+
+    (println "== audit ledger ==")
+    (doseq [f (store/ledger db)] (println f))
+
+    (println "== 项目审批 filing records ==")
+    (doseq [r (store/filing-history db)] (println r))
+
+    (println "== fieldwork records ==")
+    (doseq [r (store/fieldwork-history db)] (println r))))

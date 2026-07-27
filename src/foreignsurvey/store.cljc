@@ -1,0 +1,410 @@
+(ns foreignsurvey.store
+  "SSoT for the China foreign-related survey actor, behind a `Store`
+  protocol so the backend is a swap, not a rewrite -- the same seam
+  every prior cloud-itonami actor in this fleet uses.
+
+    - `MemStore`     -- atom of EDN. The deterministic default for
+                        dev/tests/demo (no deps).
+    - `DatomicStore` -- backed by `langchain.db`, a Datomic-API-compatible
+                        EAV store.
+
+  Both implement the same protocol and pass the same contract
+  (test/foreignsurvey/store_contract_test.clj).
+
+  The primary entity is a `survey` (调查项目). The project-approval filing
+  and the fieldwork apply SEQUENTIALLY to the SAME survey record (filing
+  first, fieldwork later), guarded by dedicated `:filed?`/`:fielded?`
+  booleans -- never a `:status` value.
+
+  The ledger stays append-only on every backend."
+  (:require [foreignsurvey.registry :as registry]
+            [langchain.db :as d]
+            [langchain-store.core :as ls]))
+
+(defprotocol Store
+  (survey [s id])
+  (all-surveys [s])
+  (assessment-of [s survey-id] "committed regime assessment, or nil")
+  (ledger [s])
+  (filing-history [s] "the append-only project-filing history")
+  (fieldwork-history [s] "the append-only fieldwork history")
+  (next-filing-sequence [s jurisdiction])
+  (next-fieldwork-sequence [s jurisdiction])
+  (survey-already-filed? [s survey-id])
+  (survey-already-fielded? [s survey-id])
+  (commit-record! [s record] "apply a committed op's record to the SSoT")
+  (append-ledger! [s fact]   "append one immutable decision fact")
+  (with-surveys [s surveys] "replace/seed the survey directory"))
+
+;; ----------------------------- demo data -----------------------------
+
+(defn demo-data
+  "A small, self-contained survey set covering both actuation lifecycles
+  (project filing, fieldwork) plus every one of the governor's own
+  China-specific checks."
+  []
+  {:surveys
+   {;; clean foreign-related SOCIAL survey: permit + project approval on file
+    "srv-1" {:id "srv-1" :operator "北京某调查有限公司" :client "Overseas Research Ltd"
+             :jurisdiction "CHN" :survey-kind :social :foreign-related? true
+             :permit-number "涉外调查许可证第京0001号" :permit-valid-until "2028-01-01"
+             :project-approval-number "国统涉审字[2026]第015号"
+             :field-start-date "2026-09-01"
+             :planned-sample-size 1200 :approved-sample-size 1500
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; no spec-basis: a jurisdiction this repo does not cover
+    "srv-2" {:id "srv-2" :operator "Atlantis Research" :client "Atlantis Ltd"
+             :jurisdiction "ATL" :survey-kind :market :foreign-related? true
+             :permit-number "n/a" :permit-valid-until "2028-01-01"
+             :project-approval-number nil
+             :field-start-date "2026-09-01"
+             :planned-sample-size 100 :approved-sample-size 200
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; FLAGSHIP: foreign-related, NO 涉外调查许可证 on file
+    "srv-3" {:id "srv-3" :operator "未取得许可の调查公司" :client "Foreign Sponsor GmbH"
+             :jurisdiction "CHN" :survey-kind :market :foreign-related? true
+             :permit-number "" :permit-valid-until "2028-01-01"
+             :project-approval-number nil
+             :field-start-date "2026-09-01"
+             :planned-sample-size 800 :approved-sample-size 1000
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; FLAGSHIP: foreign-related SOCIAL survey with NO project approval
+    "srv-4" {:id "srv-4" :operator "上海某调查有限公司" :client "Foreign University"
+             :jurisdiction "CHN" :survey-kind :social :foreign-related? true
+             :permit-number "涉外调查许可证第沪0007号" :permit-valid-until "2028-01-01"
+             :project-approval-number ""
+             :field-start-date "2026-09-01"
+             :planned-sample-size 600 :approved-sample-size 1000
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; foreign-related MARKET survey needs the permit but NOT a project approval
+    "srv-5" {:id "srv-5" :operator "广州某市场研究公司" :client "Overseas Brand Co"
+             :jurisdiction "CHN" :survey-kind :market :foreign-related? true
+             :permit-number "涉外调查许可证第粤0021号" :permit-valid-until "2028-01-01"
+             :project-approval-number nil
+             :field-start-date "2026-09-01"
+             :planned-sample-size 2000 :approved-sample-size 2500
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; permit expired before the field start date
+    "srv-6" {:id "srv-6" :operator "成都某调查公司" :client "Foreign Sponsor SA"
+             :jurisdiction "CHN" :survey-kind :market :foreign-related? true
+             :permit-number "涉外调查许可证第川0003号" :permit-valid-until "2026-06-30"
+             :project-approval-number nil
+             :field-start-date "2026-09-01"
+             :planned-sample-size 500 :approved-sample-size 800
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; prohibited content (第七条)
+    "srv-7" {:id "srv-7" :operator "某调查公司" :client "Foreign Sponsor Inc"
+             :jurisdiction "CHN" :survey-kind :social :foreign-related? true
+             :permit-number "涉外调查许可证第京0002号" :permit-valid-until "2028-01-01"
+             :project-approval-number "国统涉审字[2026]第016号"
+             :field-start-date "2026-09-01"
+             :planned-sample-size 400 :approved-sample-size 500
+             :content-flags [:state-secrets]
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; sensitive personal information without separate consent (PIPL)
+    "srv-8" {:id "srv-8" :operator "深圳某调查公司" :client "Foreign Health Co"
+             :jurisdiction "CHN" :survey-kind :market :foreign-related? true
+             :permit-number "涉外调查许可证第深0011号" :permit-valid-until "2028-01-01"
+             :project-approval-number nil
+             :field-start-date "2026-09-01"
+             :planned-sample-size 300 :approved-sample-size 500
+             :content-flags []
+             :collects-sensitive-personal-info? true :separate-consent-obtained? false
+             :cross-border-transfer? false :cross-border-basis nil
+             :filed? false :fielded? false :status :intake}
+    ;; cross-border transfer with no recognized PIPL 第三十八条 basis
+    "srv-9" {:id "srv-9" :operator "杭州某调查公司" :client "Foreign Sponsor BV"
+             :jurisdiction "CHN" :survey-kind :market :foreign-related? true
+             :permit-number "涉外调查许可证第浙0005号" :permit-valid-until "2028-01-01"
+             :project-approval-number nil
+             :field-start-date "2026-09-01"
+             :planned-sample-size 300 :approved-sample-size 500
+             :content-flags []
+             :collects-sensitive-personal-info? false :separate-consent-obtained? false
+             :cross-border-transfer? true :cross-border-basis :handshake-agreement
+             :filed? false :fielded? false :status :intake}
+    ;; planned sample beyond the approved scope
+    "srv-10" {:id "srv-10" :operator "武汉某调查公司" :client "Foreign Sponsor KK"
+              :jurisdiction "CHN" :survey-kind :social :foreign-related? true
+              :permit-number "涉外调查许可证第鄂0009号" :permit-valid-until "2028-01-01"
+              :project-approval-number "国统涉审字[2026]第017号"
+              :field-start-date "2026-09-01"
+              :planned-sample-size 5000 :approved-sample-size 1000
+              :content-flags []
+              :collects-sensitive-personal-info? false :separate-consent-obtained? false
+              :cross-border-transfer? false :cross-border-basis nil
+              :filed? false :fielded? false :status :intake}
+    ;; approved sample not recorded -- un-checkable is NOT within scope
+    "srv-11" {:id "srv-11" :operator "西安某调查公司" :client "Foreign Sponsor Oy"
+              :jurisdiction "CHN" :survey-kind :market :foreign-related? true
+              :permit-number "涉外调查许可证第陕0004号" :permit-valid-until "2028-01-01"
+              :project-approval-number nil
+              :field-start-date "2026-09-01"
+              :planned-sample-size 700 :approved-sample-size nil
+              :content-flags []
+              :collects-sensitive-personal-info? false :separate-consent-obtained? false
+              :cross-border-transfer? false :cross-border-basis nil
+              :filed? false :fielded? false :status :intake}
+    ;; unrecognized survey kind -- must not be silently treated as :market
+    "srv-12" {:id "srv-12" :operator "某调查公司" :client "Foreign Sponsor Ltd"
+              :jurisdiction "CHN" :survey-kind :ethnographic :foreign-related? true
+              :permit-number "涉外调查许可证第京0003号" :permit-valid-until "2028-01-01"
+              :project-approval-number nil
+              :field-start-date "2026-09-01"
+              :planned-sample-size 200 :approved-sample-size 500
+              :content-flags []
+              :collects-sensitive-personal-info? false :separate-consent-obtained? false
+              :cross-border-transfer? false :cross-border-basis nil
+              :filed? false :fielded? false :status :intake}}})
+
+;; ----------------------------- shared commit logic -----------------------------
+
+(defn- file-project!
+  [s survey-id]
+  (let [v (survey s survey-id)
+        seq-n (next-filing-sequence s (:jurisdiction v))
+        result (registry/register-project-filing survey-id (:jurisdiction v) seq-n)]
+    {:result result
+     :survey-patch {:filed? true
+                    :filing-number (get result "filing_number")}}))
+
+(defn- field-survey!
+  [s survey-id]
+  (let [v (survey s survey-id)
+        seq-n (next-fieldwork-sequence s (:jurisdiction v))
+        result (registry/register-fieldwork survey-id (:jurisdiction v) seq-n (:survey-kind v))]
+    {:result result
+     :survey-patch {:fielded? true
+                    :fieldwork-number (get result "fieldwork_number")}}))
+
+;; ----------------------------- MemStore (default) -----------------------------
+
+(defrecord MemStore [a]
+  Store
+  (survey [_ id] (get-in @a [:surveys id]))
+  (all-surveys [_] (sort-by :id (vals (:surveys @a))))
+  (assessment-of [_ survey-id] (get-in @a [:assessments survey-id]))
+  (ledger [_] (:ledger @a))
+  (filing-history [_] (:filing-records @a))
+  (fieldwork-history [_] (:fieldwork-records @a))
+  (next-filing-sequence [_ jurisdiction] (get-in @a [:filing-sequences jurisdiction] 0))
+  (next-fieldwork-sequence [_ jurisdiction] (get-in @a [:fieldwork-sequences jurisdiction] 0))
+  (survey-already-filed? [_ survey-id] (boolean (get-in @a [:surveys survey-id :filed?])))
+  (survey-already-fielded? [_ survey-id] (boolean (get-in @a [:surveys survey-id :fielded?])))
+  (commit-record! [s {:keys [effect path value payload]}]
+    (case effect
+      :survey/upsert
+      (swap! a update-in [:surveys (:id value)] merge value)
+
+      :assessment/set
+      (swap! a assoc-in [:assessments (first path)] payload)
+
+      :survey/mark-filed
+      (let [survey-id (first path)
+            {:keys [result survey-patch]} (file-project! s survey-id)
+            jurisdiction (:jurisdiction (survey s survey-id))]
+        (swap! a (fn [state]
+                   (-> state
+                       (update-in [:filing-sequences jurisdiction] (fnil inc 0))
+                       (update-in [:surveys survey-id] merge survey-patch)
+                       (update :filing-records registry/append result))))
+        result)
+
+      :survey/mark-fielded
+      (let [survey-id (first path)
+            {:keys [result survey-patch]} (field-survey! s survey-id)
+            jurisdiction (:jurisdiction (survey s survey-id))]
+        (swap! a (fn [state]
+                   (-> state
+                       (update-in [:fieldwork-sequences jurisdiction] (fnil inc 0))
+                       (update-in [:surveys survey-id] merge survey-patch)
+                       (update :fieldwork-records registry/append result))))
+        result)
+      nil)
+    s)
+  (append-ledger! [_ fact] (swap! a update :ledger conj fact) fact)
+  (with-surveys [s surveys] (when (seq surveys) (swap! a assoc :surveys surveys)) s))
+
+(defn seed-db
+  "A MemStore seeded with the demo survey set."
+  []
+  (->MemStore (atom (assoc (demo-data)
+                           :assessments {}
+                           :ledger [] :filing-sequences {} :filing-records []
+                           :fieldwork-sequences {} :fieldwork-records []))))
+
+;; ----------------------------- DatomicStore (langchain.db) -----------------------------
+
+(def ^:private schema
+  {:survey/id                        {:db/unique :db.unique/identity}
+   :assessment/survey-id             {:db/unique :db.unique/identity}
+   :ledger/seq                       {:db/unique :db.unique/identity}
+   :filing-record/seq                {:db/unique :db.unique/identity}
+   :fieldwork-record/seq             {:db/unique :db.unique/identity}
+   :filing-sequence/jurisdiction     {:db/unique :db.unique/identity}
+   :fieldwork-sequence/jurisdiction  {:db/unique :db.unique/identity}})
+
+(defn- survey->tx
+  [{:keys [id operator client jurisdiction survey-kind foreign-related?
+           permit-number permit-valid-until project-approval-number field-start-date
+           planned-sample-size approved-sample-size content-flags
+           collects-sensitive-personal-info? separate-consent-obtained?
+           cross-border-transfer? cross-border-basis
+           filed? fielded? status filing-number fieldwork-number]}]
+  (cond-> {:survey/id id}
+    operator                  (assoc :survey/operator operator)
+    client                    (assoc :survey/client client)
+    jurisdiction              (assoc :survey/jurisdiction jurisdiction)
+    survey-kind               (assoc :survey/kind survey-kind)
+    (some? foreign-related?)  (assoc :survey/foreign-related? foreign-related?)
+    permit-number             (assoc :survey/permit-number permit-number)
+    permit-valid-until        (assoc :survey/permit-valid-until permit-valid-until)
+    project-approval-number   (assoc :survey/project-approval-number project-approval-number)
+    field-start-date          (assoc :survey/field-start-date field-start-date)
+    planned-sample-size       (assoc :survey/planned-sample-size planned-sample-size)
+    approved-sample-size      (assoc :survey/approved-sample-size approved-sample-size)
+    ;; stored as an EDN blob: a vector-valued attribute would otherwise be
+    ;; read back as a cardinality-many set and lose its recorded order.
+    (some? content-flags)     (assoc :survey/content-flags (ls/enc (vec content-flags)))
+    (some? collects-sensitive-personal-info?)
+    (assoc :survey/collects-sensitive-personal-info? collects-sensitive-personal-info?)
+    (some? separate-consent-obtained?)
+    (assoc :survey/separate-consent-obtained? separate-consent-obtained?)
+    (some? cross-border-transfer?) (assoc :survey/cross-border-transfer? cross-border-transfer?)
+    cross-border-basis        (assoc :survey/cross-border-basis cross-border-basis)
+    (some? filed?)            (assoc :survey/filed? filed?)
+    (some? fielded?)          (assoc :survey/fielded? fielded?)
+    status                    (assoc :survey/status status)
+    filing-number             (assoc :survey/filing-number filing-number)
+    fieldwork-number          (assoc :survey/fieldwork-number fieldwork-number)))
+
+(def ^:private survey-pull
+  [:survey/id :survey/operator :survey/client :survey/jurisdiction :survey/kind
+   :survey/foreign-related? :survey/permit-number :survey/permit-valid-until
+   :survey/project-approval-number :survey/field-start-date
+   :survey/planned-sample-size :survey/approved-sample-size :survey/content-flags
+   :survey/collects-sensitive-personal-info? :survey/separate-consent-obtained?
+   :survey/cross-border-transfer? :survey/cross-border-basis
+   :survey/filed? :survey/fielded? :survey/status
+   :survey/filing-number :survey/fieldwork-number])
+
+(defn- pull->survey [m]
+  (when (:survey/id m)
+    ;; NOTE: `:approved-sample-size`, the dates and the permit/approval
+    ;; numbers are deliberately NOT coerced to a default -- an unrecorded
+    ;; value must stay nil so the `checkable?` predicates can see it is
+    ;; un-checkable rather than read a fabricated 0 or "".
+    {:id (:survey/id m) :operator (:survey/operator m) :client (:survey/client m)
+     :jurisdiction (:survey/jurisdiction m) :survey-kind (:survey/kind m)
+     :foreign-related? (boolean (:survey/foreign-related? m))
+     :permit-number (:survey/permit-number m)
+     :permit-valid-until (:survey/permit-valid-until m)
+     :project-approval-number (:survey/project-approval-number m)
+     :field-start-date (:survey/field-start-date m)
+     :planned-sample-size (:survey/planned-sample-size m)
+     :approved-sample-size (:survey/approved-sample-size m)
+     :content-flags (or (ls/dec* (:survey/content-flags m)) [])
+     :collects-sensitive-personal-info? (boolean (:survey/collects-sensitive-personal-info? m))
+     :separate-consent-obtained? (boolean (:survey/separate-consent-obtained? m))
+     :cross-border-transfer? (boolean (:survey/cross-border-transfer? m))
+     :cross-border-basis (:survey/cross-border-basis m)
+     :filed? (boolean (:survey/filed? m)) :fielded? (boolean (:survey/fielded? m))
+     :status (:survey/status m)
+     :filing-number (:survey/filing-number m)
+     :fieldwork-number (:survey/fieldwork-number m)}))
+
+(defrecord DatomicStore [conn]
+  Store
+  (survey [_ id]
+    (pull->survey (d/pull (d/db conn) survey-pull [:survey/id id])))
+  (all-surveys [_]
+    (->> (d/q '[:find [?id ...] :where [?e :survey/id ?id]] (d/db conn))
+         (map #(pull->survey (d/pull (d/db conn) survey-pull [:survey/id %])))
+         (sort-by :id)))
+  (assessment-of [_ survey-id]
+    (ls/dec* (d/q '[:find ?p . :in $ ?sid
+                    :where [?a :assessment/survey-id ?sid] [?a :assessment/payload ?p]]
+                  (d/db conn) survey-id)))
+  (ledger [_] (ls/read-stream conn :ledger/seq :ledger/fact))
+  (filing-history [_] (ls/read-stream conn :filing-record/seq :filing-record/record))
+  (fieldwork-history [_] (ls/read-stream conn :fieldwork-record/seq :fieldwork-record/record))
+  (next-filing-sequence [_ jurisdiction]
+    (or (d/q '[:find ?n . :in $ ?j
+               :where [?e :filing-sequence/jurisdiction ?j] [?e :filing-sequence/next ?n]]
+             (d/db conn) jurisdiction)
+        0))
+  (next-fieldwork-sequence [_ jurisdiction]
+    (or (d/q '[:find ?n . :in $ ?j
+               :where [?e :fieldwork-sequence/jurisdiction ?j] [?e :fieldwork-sequence/next ?n]]
+             (d/db conn) jurisdiction)
+        0))
+  (survey-already-filed? [s survey-id] (boolean (:filed? (survey s survey-id))))
+  (survey-already-fielded? [s survey-id] (boolean (:fielded? (survey s survey-id))))
+  (commit-record! [s {:keys [effect path value payload]}]
+    (case effect
+      :survey/upsert
+      (d/transact! conn [(survey->tx value)])
+
+      :assessment/set
+      (d/transact! conn [{:assessment/survey-id (first path) :assessment/payload (ls/enc payload)}])
+
+      :survey/mark-filed
+      (let [survey-id (first path)
+            {:keys [result survey-patch]} (file-project! s survey-id)
+            jurisdiction (:jurisdiction (survey s survey-id))
+            next-n (inc (next-filing-sequence s jurisdiction))]
+        (d/transact! conn
+                     [(survey->tx (assoc survey-patch :id survey-id))
+                      {:filing-sequence/jurisdiction jurisdiction :filing-sequence/next next-n}
+                      {:filing-record/seq (count (filing-history s))
+                       :filing-record/record (ls/enc (get result "record"))}])
+        result)
+
+      :survey/mark-fielded
+      (let [survey-id (first path)
+            {:keys [result survey-patch]} (field-survey! s survey-id)
+            jurisdiction (:jurisdiction (survey s survey-id))
+            next-n (inc (next-fieldwork-sequence s jurisdiction))]
+        (d/transact! conn
+                     [(survey->tx (assoc survey-patch :id survey-id))
+                      {:fieldwork-sequence/jurisdiction jurisdiction :fieldwork-sequence/next next-n}
+                      {:fieldwork-record/seq (count (fieldwork-history s))
+                       :fieldwork-record/record (ls/enc (get result "record"))}])
+        result)
+      nil)
+    s)
+  (append-ledger! [s fact]
+    (ls/append-blob! conn :ledger/seq :ledger/fact (count (ledger s)) fact)
+    fact)
+  (with-surveys [s surveys]
+    (when (seq surveys) (d/transact! conn (mapv survey->tx (vals surveys)))) s))
+
+(defn datomic-store
+  ([] (datomic-store {}))
+  ([{:keys [surveys]}]
+   (let [s (->DatomicStore (d/create-conn schema))]
+     (with-surveys s surveys))))
+
+(defn datomic-seed-db
+  []
+  (datomic-store (demo-data)))
