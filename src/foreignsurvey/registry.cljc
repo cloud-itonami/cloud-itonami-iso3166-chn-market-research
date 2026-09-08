@@ -27,7 +27,7 @@
   operator would keep, not the act of going to field (that is
   `foreignsurvey.operation`'s `:survey/field`, always human-gated -- see
   README Actuation)."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (defn- unsigned-certificate
   "Every certificate this actor produces is UNSIGNED -- signature is the
@@ -112,7 +112,7 @@
     (throw (ex-info "project-filing: jurisdiction required" {})))
   (when (< sequence 0)
     (throw (ex-info "project-filing: sequence must be >= 0" {})))
-  (let [filing-number (str (str/upper-case jurisdiction) "-APL-" (zero-pad sequence 6))
+  (let [filing-number (str (str/upper jurisdiction) "-APL-" (zero-pad sequence 6))
         record {"record_id" filing-number
                 "kind" "foreign-survey-project-filing-draft"
                 "survey_id" survey-id
@@ -137,7 +137,7 @@
      (throw (ex-info "fieldwork: jurisdiction required" {})))
    (when (< sequence 0)
      (throw (ex-info "fieldwork: sequence must be >= 0" {})))
-   (let [fieldwork-number (str (str/upper-case jurisdiction) "-FLD-" (zero-pad sequence 6))
+   (let [fieldwork-number (str (str/upper jurisdiction) "-FLD-" (zero-pad sequence 6))
          record (cond-> {"record_id" fieldwork-number
                          "kind" "foreign-survey-fieldwork"
                          "survey_id" survey-id
