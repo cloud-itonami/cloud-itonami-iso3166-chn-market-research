@@ -56,7 +56,7 @@
                                       un-checkable hold.
     9. Double-actuation guards     -- off dedicated `:filed?`/`:fielded?`
                                       facts (never a `:status` value)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [foreignsurvey.facts :as facts]
             [foreignsurvey.registry :as registry]
             [foreignsurvey.store :as store]))
