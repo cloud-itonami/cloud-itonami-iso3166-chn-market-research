@@ -9,7 +9,7 @@
                         EAV store.
 
   Both implement the same protocol and pass the same contract
-  (test/foreignsurvey/store_contract_test.clj).
+  (test/foreignsurvey/store_contract_test.cljk).
 
   The primary entity is a `survey` (调查项目). The project-approval filing
   and the fieldwork apply SEQUENTIALLY to the SAME survey record (filing
