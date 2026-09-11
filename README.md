@@ -22,9 +22,9 @@ market-research actor.
 | Actor | `src/foreignsurvey/*` |
 | Governor | `:survey-integrity-governor` |
 | Flagship HARD | `foreign-survey-permit-missing` · `social-survey-project-unapproved` |
-| Tests | `clojure -M:dev:test` — 51 tests, 217 assertions |
-| Demo | `clojure -M:dev:run` |
-| Lint | `clojure -M:lint` |
+| Tests | `kbb -M:dev:test` — 51 tests, 217 assertions |
+| Demo | `kbb -M:dev:run` |
+| Lint | `kbb -M:lint` |
 
 ## The distinction this repo exists to keep straight
 

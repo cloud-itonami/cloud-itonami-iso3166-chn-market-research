@@ -71,7 +71,7 @@ rather than a rewrite.
 - `content-flags` is persisted as an EDN blob rather than a
   cardinality-many attribute, so the recorded order survives the Datomic
   round trip; a store-contract test asserts it.
-- 51 tests / 217 assertions green; `clojure -M:lint` clean.
+- 51 tests / 217 assertions green; `kbb -M:lint` clean.
 
 ## Alternatives considered
 
