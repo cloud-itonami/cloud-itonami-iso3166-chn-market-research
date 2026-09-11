@@ -1,5 +1,5 @@
 (ns foreignsurvey.sim
-  "Demo driver -- `clojure -M:dev:run`. Walks a clean foreign-related
+  "Demo driver -- `kbb -M:dev:run`. Walks a clean foreign-related
   social survey through intake -> regime assessment -> 项目审批 filing
   (escalate/approve/commit) -> fieldwork (escalate/approve/commit), then
   shows every HARD-hold scenario the China regime adds -- including the
