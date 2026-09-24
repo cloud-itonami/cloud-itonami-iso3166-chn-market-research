@@ -2,7 +2,7 @@
   "The pure record layer: it never mints a 许可证 or an approval number,
   its ceiling and validity checks distinguish 'within scope' from
   'un-checkable', and its dates order correctly without a date library."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [foreignsurvey.registry :as registry]))
 
 ;; ----------------------------- ceiling -----------------------------

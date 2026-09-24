@@ -2,7 +2,7 @@
   "The non-fabrication discipline as executable tests, plus the one
   distinction this catalog exists to keep straight: 涉外社会调查 needs
   per-project approval, 涉外市场调查 does not."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [foreignsurvey.facts :as facts]))
 
 (deftest chn-has-a-cited-spec-basis

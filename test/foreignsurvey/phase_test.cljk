@@ -1,7 +1,7 @@
 (ns foreignsurvey.phase-test
   "The rollout invariant as executable tests: fieldwork is never
   auto-eligible at any phase, and a governor HOLD survives every phase."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [foreignsurvey.phase :as phase]))
 
 (deftest actuation-is-never-auto-at-any-phase
