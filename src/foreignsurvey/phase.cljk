@@ -21,7 +21,7 @@
   `foreignsurvey.governor`'s `:actuation/file-project`/
   `:actuation/field-survey` high-stakes gate enforces the same invariant
   independently -- two layers, not one, agree on this."
-  (:require [clojure.set :as set]))
+  (:require [kotoba.lang.coll :as set]))
 
 (def read-ops  #{})
 (def write-ops #{:survey/intake :regime/assess :project/file :survey/field})
